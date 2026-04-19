@@ -10,23 +10,27 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/lib/browser.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="https://copy.sh/v86/libv86.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/v86@latest/build/libv86.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: monospace; display: flex; flex-direction: column; height: 100vh; }
+        body { margin: 0; background: #000; color: #fff; font-family: monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         #auth-overlay { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
-        #screen { flex-grow: 1; background: #000; cursor: text; }
-        .controls { padding: 10px; background: #222; display: flex; gap: 10px; align-items: center; }
-        button { padding: 8px 16px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
-        .login-btn { background: #fff; color: #000; }
-        .sync-btn { background: #2ea44f; color: #fff; }
+        #screen { flex-grow: 1; background: #000; cursor: text; overflow: hidden; }
         #screen canvas { display: block; }
+        .controls { padding: 10px; background: #222; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #444; }
+        button { padding: 8px 16px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; transition: 0.2s; }
+        .login-btn { background: #fff; color: #000; margin: 5px; }
+        .login-btn:hover { background: #ccc; }
+        .sync-btn { background: #2ea44f; color: #fff; }
+        .sync-btn:disabled { background: #1a5c2d; opacity: 0.6; }
+        #status { font-size: 12px; color: #aaa; }
     </style>
 </head>
 <body>
 
     <div id="auth-overlay">
         <h1>Alpine</h1>
-        <div style="display: flex; gap: 10px;">
+        <p>Sign in to boot your persistent Linux environment</p>
+        <div>
             <button class="login-btn" onclick="login('oauth_google')">Google</button>
             <button class="login-btn" onclick="login('oauth_github')">GitHub</button>
             <button class="login-btn" onclick="login('oauth_gitlab')">GitLab</button>
@@ -40,14 +44,13 @@
         <span id="status"></span>
     </div>
 
-    <div id="screen">
-        <div style="white-space: pre; font-family: 'Courier New', Courier, monospace; line-height: 14px;"></div>
-        <canvas></canvas>
-    </div>
+    <div id="screen"></div>
 
     <script>
         const SB_URL = 'https://ovndseemelbntyrwgjlp.supabase.co';
         const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92bmRzZWVtZWxibnR5cndnamxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTg5OTAsImV4cCI6MjA5MjE5NDk5MH0.Y5OMPixHfAB8b5J37k0wnXarJDzKhAiW3-wipSYKhfM';
+        const ISO_NAME = 'alpine-virt-3.16.9-x86.iso';
+        
         const sb = supabase.createClient(SB_URL, SB_KEY);
         let emu;
 
@@ -62,25 +65,38 @@
 
         function login(s) {
             if (s === 'email') { Clerk.openSignIn(); }
-            else { Clerk.authenticateWithRedirect({ strategy: s, redirectUrl: window.location.href, redirectUrlComplete: window.location.href }); }
+            else { 
+                Clerk.authenticateWithRedirect({ 
+                    strategy: s, 
+                    redirectUrl: window.location.href, 
+                    redirectUrlComplete: window.location.href 
+                }); 
+            }
         }
 
         async function boot() {
-            emu = new V86Starter({
-                wasm_path: "https://copy.sh/v86/v86.wasm",
+            // Using V86 class 
+            const v86Config = {
+                wasm_path: "https://cdn.jsdelivr.net/npm/v86@latest/build/v86.wasm",
                 memory_size: 128 * 1024 * 1024,
                 screen_container: document.getElementById("screen"),
-                bios: { url: "https://copy.sh/v86/bios/seabios.bin" },
-                vga_bios: { url: "https://copy.sh/v86/bios/vgabios.bin" },
-                cdrom: { url: SB_URL + "/storage/v1/object/public/alphine/alpine.iso" },
+                bios: { url: "https://cdn.jsdelivr.net/npm/v86@latest/bios/seabios.bin" },
+                vga_bios: { url: "https://cdn.jsdelivr.net/npm/v86@latest/bios/vgabios.bin" },
+                cdrom: { url: SB_URL + "/storage/v1/object/public/alphine/" + ISO_NAME },
                 autostart: true,
-            });
+            };
 
-            const { data } = await sb.storage.from('alphine').download(Clerk.user.id + '/state.bin');
-            if (data) {
+            // Initialize the emulator
+            emu = new V86(v86Config);
+
+            // Attempt to restore cloud state
+            const { data, error } = await sb.storage.from('alphine').download(Clerk.user.id + '/state.bin');
+            if (data && !error) {
                 const buf = await data.arrayBuffer();
                 const dec = fflate.unzlibSync(new Uint8Array(buf));
                 emu.restore_state(dec.buffer);
+                document.getElementById('status').innerText = "Cloud state restored!";
+                setTimeout(() => document.getElementById('status').innerText = "", 3000);
             }
         }
 
@@ -88,19 +104,26 @@
             const btn = document.getElementById('sync-btn');
             const stat = document.getElementById('status');
             btn.disabled = true;
-            stat.innerText = "Saving...";
+            stat.innerText = "Capturing state...";
 
-            const raw = await emu.save_state();
-            const comp = fflate.zlibSync(new Uint8Array(raw));
+            try {
+                const raw = await emu.save_state();
+                const comp = fflate.zlibSync(new Uint8Array(raw));
 
-            const { error } = await sb.storage.from('alphine').upload(Clerk.user.id + '/state.bin', comp, {
-                upsert: true,
-                contentType: 'application/octet-stream'
-            });
+                stat.innerText = "Uploading to Supabase...";
+                const { error } = await sb.storage.from('alphine').upload(Clerk.user.id + '/state.bin', comp, {
+                    upsert: true,
+                    contentType: 'application/octet-stream'
+                });
 
-            btn.disabled = false;
-            stat.innerText = error ? "Error!" : "Synced!";
-            setTimeout(() => stat.innerText = "", 3000);
+                stat.innerText = error ? "Upload Error: " + error.message : "Synced to Cloud!";
+            } catch (e) {
+                stat.innerText = "Sync Failed!";
+                console.error(e);
+            } finally {
+                btn.disabled = false;
+                setTimeout(() => stat.innerText = "", 4000);
+            }
         }
     </script>
 </body>
