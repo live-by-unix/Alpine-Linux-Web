@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Alpine Browser</title>
+    <title>Alpine</title>
+    <link rel="icon" type="image/png" href="https://upload.wikimedia.org/wikipedia/commons/a/af/Tux.png">
     <script async crossorigin="anonymous" 
         data-clerk-publishable-key="pk_test_cHJpbWUtc2F0eXItMjIuY2xlcmsuYWNjb3VudHMuZGV2JA"
         src="https://prime-satyr-22.clerk.accounts.dev/npm/@clerk/clerk-js@latest/dist/clerk.browser.js">
@@ -13,21 +14,22 @@
     <script src="https://cdn.jsdelivr.net/npm/v86@latest/build/libv86.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-        #auth-overlay { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        #auth-overlay { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; }
         #screen { flex-grow: 1; background: #000; cursor: text; overflow: hidden; }
         #screen canvas { display: block; }
-        .controls { padding: 10px; background: #222; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #444; }
+        .controls { padding: 10px; background: #222; display: flex; gap: 15px; align-items: center; border-bottom: 1px solid #444; }
         button { padding: 8px 16px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; transition: 0.2s; }
         .login-btn { background: #fff; color: #000; margin: 5px; }
         .login-btn:hover { background: #ccc; }
         .sync-btn { background: #2ea44f; color: #fff; }
         .sync-btn:disabled { background: #1a5c2d; opacity: 0.6; }
-        #status { font-size: 12px; color: #aaa; }
+        #status { font-size: 12px; color: #00ff00; }
     </style>
 </head>
 <body>
 
     <div id="auth-overlay">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/a/af/Tux.png" width="80" style="margin-bottom: 20px;">
         <h1>Alpine</h1>
         <p>Sign in to boot your persistent Linux environment</p>
         <div>
@@ -53,6 +55,7 @@
         
         const sb = supabase.createClient(SB_URL, SB_KEY);
         let emu;
+        let serialBuffer = "";
 
         window.addEventListener('load', async () => {
             await Clerk.load();
@@ -75,7 +78,6 @@
         }
 
         async function boot() {
-            // Using V86 class 
             const v86Config = {
                 wasm_path: "https://cdn.jsdelivr.net/npm/v86@latest/build/v86.wasm",
                 memory_size: 128 * 1024 * 1024,
@@ -86,13 +88,22 @@
                 autostart: true,
             };
 
-            // Initialize the emulator
             emu = new V86(v86Config);
 
-            // Attempt to restore cloud state
+            emu.add_listener("serial0-output-char", function(char) {
+                serialBuffer += char;
+                if (serialBuffer.endsWith("boot: ")) {
+                    emu.serial0_send("\n");
+                }
+                if (serialBuffer.endsWith("login: ")) {
+                    emu.serial0_send("root\n");
+                    serialBuffer = ""; 
+                }
+            });
+
             const { data, error } = await sb.storage.from('alphine').download(Clerk.user.id + '/state.bin');
             if (data && !error) {
-                const buf = await data.arrayBuffer();
+                const buf = await data.buffer ? await data.buffer() : await data.arrayBuffer();
                 const dec = fflate.unzlibSync(new Uint8Array(buf));
                 emu.restore_state(dec.buffer);
                 document.getElementById('status').innerText = "Cloud state restored!";
@@ -110,13 +121,13 @@
                 const raw = await emu.save_state();
                 const comp = fflate.zlibSync(new Uint8Array(raw));
 
-                stat.innerText = "Uploading to Supabase...";
+                stat.innerText = "Uploading...";
                 const { error } = await sb.storage.from('alphine').upload(Clerk.user.id + '/state.bin', comp, {
                     upsert: true,
                     contentType: 'application/octet-stream'
                 });
 
-                stat.innerText = error ? "Upload Error: " + error.message : "Synced to Cloud!";
+                stat.innerText = error ? "Error: " + error.message : "Synced to Cloud!";
             } catch (e) {
                 stat.innerText = "Sync Failed!";
                 console.error(e);
