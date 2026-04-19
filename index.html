@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alphine Browser</title>
+    <script async crossorigin="anonymous" 
+        data-clerk-publishable-key="pk_test_cHJpbWUtc2F0eXItMjIuY2xlcmsuYWNjb3VudHMuZGV2JA"
+        src="https://prime-satyr-22.clerk.accounts.dev/npm/@clerk/clerk-js@latest/dist/clerk.browser.js">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/lib/browser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://copy.sh/v86/libv86.js"></script>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: monospace; display: flex; flex-direction: column; height: 100vh; }
+        #auth-overlay { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        #screen { flex-grow: 1; background: #000; cursor: text; }
+        .controls { padding: 10px; background: #222; display: flex; gap: 10px; align-items: center; }
+        button { padding: 8px 16px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
+        .login-btn { background: #fff; color: #000; }
+        .sync-btn { background: #2ea44f; color: #fff; }
+        #screen canvas { display: block; }
+    </style>
+</head>
+<body>
+
+    <div id="auth-overlay">
+        <h1>Alphine</h1>
+        <div style="display: flex; gap: 10px;">
+            <button class="login-btn" onclick="login('oauth_google')">Google</button>
+            <button class="login-btn" onclick="login('oauth_github')">GitHub</button>
+            <button class="login-btn" onclick="login('oauth_gitlab')">GitLab</button>
+            <button class="login-btn" onclick="login('email')">Email</button>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div id="user-button"></div>
+        <button id="sync-btn" class="sync-btn" onclick="syncToCloud()">Sync to Cloud</button>
+        <span id="status"></span>
+    </div>
+
+    <div id="screen">
+        <div style="white-space: pre; font-family: 'Courier New', Courier, monospace; line-height: 14px;"></div>
+        <canvas></canvas>
+    </div>
+
+    <script>
+        const SB_URL = 'https://ovndseemelbntyrwgjlp.supabase.co';
+        const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92bmRzZWVtZWxibnR5cndnamxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTg5OTAsImV4cCI6MjA5MjE5NDk5MH0.Y5OMPixHfAB8b5J37k0wnXarJDzKhAiW3-wipSYKhfM';
+        const sb = supabase.createClient(SB_URL, SB_KEY);
+        let emu;
+
+        window.addEventListener('load', async () => {
+            await Clerk.load();
+            if (Clerk.user) {
+                document.getElementById('auth-overlay').style.display = 'none';
+                Clerk.mountUserButton(document.getElementById('user-button'));
+                boot();
+            }
+        });
+
+        function login(s) {
+            if (s === 'email') { Clerk.openSignIn(); }
+            else { Clerk.authenticateWithRedirect({ strategy: s, redirectUrl: window.location.href, redirectUrlComplete: window.location.href }); }
+        }
+
+        async function boot() {
+            emu = new V86Starter({
+                wasm_path: "https://copy.sh/v86/v86.wasm",
+                memory_size: 128 * 1024 * 1024,
+                screen_container: document.getElementById("screen"),
+                bios: { url: "https://copy.sh/v86/bios/seabios.bin" },
+                vga_bios: { url: "https://copy.sh/v86/bios/vgabios.bin" },
+                cdrom: { url: SB_URL + "/storage/v1/object/public/alphine/alpine.iso" },
+                autostart: true,
+            });
+
+            const { data } = await sb.storage.from('alphine').download(Clerk.user.id + '/state.bin');
+            if (data) {
+                const buf = await data.arrayBuffer();
+                const dec = fflate.unzlibSync(new Uint8Array(buf));
+                emu.restore_state(dec.buffer);
+            }
+        }
+
+        async function syncToCloud() {
+            const btn = document.getElementById('sync-btn');
+            const stat = document.getElementById('status');
+            btn.disabled = true;
+            stat.innerText = "Saving...";
+
+            const raw = await emu.save_state();
+            const comp = fflate.zlibSync(new Uint8Array(raw));
+
+            const { error } = await sb.storage.from('alphine').upload(Clerk.user.id + '/state.bin', comp, {
+                upsert: true,
+                contentType: 'application/octet-stream'
+            });
+
+            btn.disabled = false;
+            stat.innerText = error ? "Error!" : "Synced!";
+            setTimeout(() => stat.innerText = "", 3000);
+        }
+    </script>
+</body>
+</html>
